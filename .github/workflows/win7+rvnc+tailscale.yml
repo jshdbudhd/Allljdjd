@@ -1,0 +1,74 @@
+name: Windows7-LiveRDP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-win7:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Update & install deps
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y qemu-system-x86 qemu-utils x11vnc xvfb curl jq wget unzip
+
+    - name: Install Tailscale
+      run: |
+        curl -fsSL https://tailscale.com/install.sh | sh
+        sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=Win7-Runner --ssh --accept-routes
+
+    - name: Check free disk space
+      run: |
+        echo "=== Disk space available ==="
+        df -h /
+
+    - name: Create disk with max available space
+      run: |
+        FREE_GB=$(df -BG --output=avail / | tail -1 | sed 's/G//')
+        DISK_SIZE=$((FREE_GB - 5))
+        if [ $DISK_SIZE -lt 10 ]; then DISK_SIZE=10; fi
+        echo "Creating disk with size: ${DISK_SIZE}G"
+        qemu-img create -f qcow2 windows_disk.qcow2 ${DISK_SIZE}G
+
+    - name: Download Windows 7 Live ISO
+      run: |
+        wget -O win7live.iso "https://crustywindo.ws/collection/Windows%207/Windows%207%20live%20cd%20from%20usb.iso"
+
+    - name: Start virtual display
+      run: |
+        Xvfb :0 -screen 0 1024x768x24 > xvfb.log 2>&1 &
+
+    - name: Start QEMU VM
+      run: |
+        DISPLAY=:0 qemu-system-x86_64 \
+          -cdrom win7live.iso \
+          -cpu qemu64 -smp cores=2 \
+          -m 4096 \
+          -hda windows_disk.qcow2 \
+          -boot d \
+          -net nic -net user \
+          -vnc :0 \
+          -usb -device usb-tablet \
+          -vga std \
+          -daemonize
+
+    - name: Start VNC server
+      run: |
+        x11vnc -display :0 -forever -nopw -listen 0.0.0.0 \
+          -xkb -noxrecord -noxfixes -noxdamage > x11vnc.log 2>&1 &
+
+    - name: Show Tailscale IP
+      run: |
+        echo "=== Tailscale IPs ==="
+        tailscale ip -4
+        tailscale ip -6
+
+    - name: Keep session alive
+      run: |
+        echo "VM running... connect using the Tailscale IP above in show ip with RealVNC (port 5900)"
+        sleep 21600
