@@ -1,0 +1,101 @@
+name: Setup GNOME Runner + Tailscale + noVNC + SendAnywhere
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  setup-gui-runner:
+    runs-on: ubuntu-latest
+    env:
+      TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+      USERNAME: runner
+      PASSWORD: runner
+      TAILSCALE_HOSTNAME: gh-gnome-novnc-${{ github.run_id }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure runner user has sudo
+        run: |
+          echo "${USERNAME}:${PASSWORD}" | sudo chpasswd
+          echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/${USERNAME}
+
+      - name: Install GNOME + VNC server
+        run: |
+          echo ">>> Installing GNOME Desktop + VNC..."
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            gnome-session gnome-terminal nautilus xorg dbus-x11 \
+            tigervnc-standalone-server tigervnc-common tigervnc-tools libfuse2
+
+          # Ensure home and desktop exist
+          sudo mkdir -p /home/${USERNAME}/Desktop
+          sudo chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}
+
+          # Configure VNC password for the runner
+          mkdir -p /home/${USERNAME}/.vnc
+          echo ${PASSWORD} | vncpasswd -f > /home/${USERNAME}/.vnc/passwd
+          chmod 600 /home/${USERNAME}/.vnc/passwd
+          chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}/.vnc
+
+          # Start GNOME when VNC launches
+          echo "gnome-session" > /home/${USERNAME}/.xsession
+          chown ${USERNAME}:${USERNAME} /home/${USERNAME}/.xsession
+
+      - name: Install noVNC + websockify
+        run: |
+          echo ">>> Installing noVNC..."
+          sudo apt-get install -y -qq git python3-websockify
+          sudo rm -rf /opt/noVNC
+          sudo git clone https://github.com/novnc/noVNC.git /opt/noVNC
+          sudo ln -sf /opt/noVNC/vnc.html /opt/noVNC/index.html
+          sudo chown -R ${USERNAME}:${USERNAME} /opt/noVNC
+
+      - name: Install Send Anywhere (AppImage) and create desktop icon
+        run: |
+          echo ">>> Installing Send Anywhere (AppImage)..."
+          SA_PATH="/home/${USERNAME}/sendanywhere.appimage"
+          wget -q https://update.send-anywhere.com/linux_downloads/sendanywhere_latest_amd64.appimage -O "$SA_PATH"
+          chmod +x "$SA_PATH"
+          sudo chown ${USERNAME}:${USERNAME} "$SA_PATH"
+
+          echo ">>> Creating desktop shortcut for Send Anywhere..."
+          DESKTOP_FILE="/home/${USERNAME}/Desktop/send-anywhere.desktop"
+          cat <<'DESKTOP' | sudo -u ${USERNAME} tee "$DESKTOP_FILE" > /dev/null
+[Desktop Entry]
+Name=Send Anywhere
+Comment=Send Anywhere - transfer files (AppImage)
+Exec=/home/runner/sendanywhere.appimage %U
+Icon=sendanywhere
+Terminal=false
+Type=Application
+Categories=Network;FileTransfer;
+StartupNotify=false
+DESKTOP
+          chmod +x "$DESKTOP_FILE"
+          # also place a system-wide .desktop so it appears in app menu
+          sudo cp "$DESKTOP_FILE" /usr/share/applications/send-anywhere.desktop || true
+
+      - name: Install Tailscale
+        run: |
+          echo ">>> Installing Tailscale..."
+          curl -fsSL https://tailscale.com/install.sh | sudo sh
+          sudo tailscale up --authkey "${TAILSCALE_AUTHKEY}" --hostname "${TAILSCALE_HOSTNAME}" || true
+
+      - name: Start VNC + noVNC proxy + Show URL
+        run: |
+          echo ">>> Starting VNC server..."
+          sudo -u ${USERNAME} vncserver :1 -geometry 1280x800 -depth 24 || true
+
+          echo ">>> Starting noVNC websockify..."
+          nohup websockify --web=/opt/noVNC 6080 localhost:5901 &
+
+          # Get Tailscale IP (may take a moment)
+          sleep 5
+          TAILSCALE_IP=$(tailscale ip -4 | head -n1 || echo "(tailscale ip not ready)")
+
+          echo "=== CONNECTION INFO ==="
+          echo "USERNAME: ${USERNAME}"
