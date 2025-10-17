@@ -1,0 +1,158 @@
+name: RDP and Private Web Server (Tailscale)
+on:
+  # يسمح بتشغيل الخطة يدوياً من واجهة GitHub Actions
+  workflow_dispatch:
+
+jobs:
+  secure-rdp:
+    # بيئة Windows 2025 هي الأنسب لـ RDP
+    runs-on: windows-2025
+    # يحدد أقصى وقت تشغيل للـ Runner (40 ساعة، لكن GitHub يحددها بـ 6 ساعات للـ Free Runners)
+    timeout-minutes: 3600
+
+    steps:
+      - name: Configure Core RDP Settings
+        run: |
+          # السماح باتصال RDP
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+          # إضافة قاعدة جدار الحماية لـ RDP (لضمان عمله محلياً قبل Tailscale)
+          netsh advfirewall firewall delete rule name="RDP-Tailscale"
+          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
+          Restart-Service -Name TermService -Force
+
+      - name: Create RDP User with Static Password
+        run: |
+          $password = "admin@123"
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+
+          if (-not (Get-LocalUser -Name "TOOLBOXLAP" -ErrorAction SilentlyContinue)) {
+              New-LocalUser -Name "TOOLBOXLAP" -Password $securePass -AccountNeverExpires
+          }
+
+          Add-LocalGroupMember -Group "Administrators" -Member "TOOLBOXLAP"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "TOOLBOXLAP"
+
+          echo "RDP_CREDS=User: TOOLBOXLAP | Password: $password" >> $env:GITHUB_ENV
+
+          if (-not (Get-LocalUser -Name "TOOLBOXLAP")) {
+              Write-Error "User creation failed"
+              exit 1
+          }
+
+      - name: Install Tailscale
+        run: |
+          # يتم تثبيت Tailscale
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
+
+      - name: Establish Tailscale Connection
+        run: |
+          # يستخدم مفتاح المصادقة المخزن في GitHub Secrets لربط الـ Runner بشبكتك
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          $tsIP = $null
+          $retries = 0
+          while (-not $tsIP -and $retries -lt 10) {
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+              Start-Sleep -Seconds 5
+              $retries++
+          }
+          if (-not $tsIP) {
+              Write-Error "Tailscale IP not assigned. Exiting."
+              exit 1
+          }
+          # تخزين الـ IP في متغير بيئة لاستخدامه لاحقاً
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          
+      - name: Download Files & Setup WebRoot
+        run: |
+          # تعيين المجلد الجذري لخادم الويب (مكان تخزين الملفات التي سيتم بثها)
+          $webRoot = "C:\WebRoot"
+          New-Item -ItemType Directory -Force -Path $webRoot | Out-Null
+          
+          # 1. تنزيل فيديو الأنمي ووضعه في المجلد الجذري
+          $animeUrl = "YOUR_DIRECT_ANIME_VIDEO_LINK.mp4" # <--- غيّر هذا الرابط برابطك الفعلي
+          $animePath = "$webRoot\anime.mp4"
+          Write-Host "Downloading Anime Video to $webRoot..."
+          Invoke-WebRequest -Uri $animeUrl -OutFile $animePath
+          
+          # تنزيل الملفات الأخرى (محذوفة للحفاظ على تركيز الخطة، يمكن إعادتها إذا أردت)
+          
+          Write-Host "Anime video downloaded successfully."
+
+      - name: Create HTML Index and Video Player Files
+        run: |
+          $webRoot = "C:\WebRoot"
+          
+          # 1. إنشاء ملف مشغل الفيديو (video_player.html) - يحتوي على وسم <video>
+          $playerContent = @"
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>Video Player</title>
+              <style>
+                  body { margin: 0; background-color: #282c34; }
+                  video { width: 100%; height: 100vh; display: block; }
+              </style>
+          </head>
+          <body>
+              <video controls autoplay>
+                  <source src="anime.mp4" type="video/mp4">
+                  متصفحك لا يدعم تشغيل الفيديو.
+              </video>
+          </body>
+          </html>
+          "@
+          $playerContent | Out-File "$webRoot\video_player.html" -Encoding UTF8
+
+          # 2. إنشاء ملف index.html - يحتوي على وسم <iframe> لتضمين المشغل
+          $indexContent = @"
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>Private Anime Stream (iFrame)</title>
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <style>
+                  body { background-color: #282c34; color: #fff; font-family: Arial, sans-serif; text-align: center; padding: 20px; }
+                  iframe { border: 4px solid #61afef; border-radius: 8px; width: 90%; height: 400px; }
+                  h1 { color: #56b6c2; }
+              </style>
+          </head>
+          <body>
+              <h1>My Private Anime Video via IFrame (Tailscale)</h1>
+              <iframe src="video_player.html" allowfullscreen></iframe>
+              <p>Accessed securely via Tailscale IP: $env:TAILSCALE_IP:8080</p>
+          </body>
+          </html>
+          "@
+          $indexContent | Out-File "$webRoot\index.html" -Encoding UTF8
+
+          Write-Host "HTML files created successfully (index.html with iFrame)."
+
+      - name: Maintain Connection and Start Web Server
+        run: |
+          $webRoot = "C:\WebRoot"
+          $serverPort = 8080 
+          
+          # تشغيل خادم Python Simple HTTP Server في الخلفية
+          Write-Host "Starting Python Simple HTTP Server on port $serverPort..."
+          # استخدام Start-Process لتشغيل الخادم في الخلفية
+          Start-Process python -ArgumentList "-m", "http.server", "$serverPort", "--directory", "$webRoot" -NoNewWindow
+          
+          Write-Host "`n=== RDP & Web Access ==="
+          Write-Host "RDP Address: $env:TAILSCALE_IP"
+          Write-Host "Web URL (Tailscale): http://$env:TAILSCALE_IP:$serverPort"
+          Write-Host "Username: TOOLBOXLAP"
+          Write-Host "Password: admin@123"
+          Write-Host "========================"
+
+          # حلقة لا نهائية لإبقاء الـ Runner نشطاً
+          while ($true) {
+              Write-Host "[$(Get-Date)] RDP & Web Server Active - Use Ctrl+C in workflow to terminate"
+              Start-Sleep -Seconds 300
+          }
