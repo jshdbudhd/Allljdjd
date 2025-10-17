@@ -76,8 +76,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path $webRoot | Out-Null
           
           # 1. تنزيل فيديو الأنمي ووضعه في المجلد الجذري
-          $animeUrl = "YOUR_DIRECT_ANIME_VIDEO_LINK.mp4" # <--- غيّر هذا الرابط برابطك الفعلي
-          $animePath = "$webRoot\anime.mp4"
+          $animeUrl = "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4" # <--- غيّر هذا الرابط برابطك الفعلي
+          $animePath = "$webRoot\ElephantsDream.mp4"
           Write-Host "Downloading Anime Video to $webRoot..."
           Invoke-WebRequest -Uri $animeUrl -OutFile $animePath
           
@@ -102,7 +102,7 @@ jobs:
           </head>
           <body>
               <video controls autoplay>
-                  <source src="anime.mp4" type="video/mp4">
+                  <source src="ElephantsDream.mp4" type="video/mp4">
                   متصفحك لا يدعم تشغيل الفيديو.
               </video>
           </body>
