@@ -1,0 +1,177 @@
+steps:
+  - name: Configure Core RDP Settings
+    run: |
+      Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+      Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+      Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+      netsh advfirewall firewall delete rule name="RDP-Tailscale"
+      netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
+      Restart-Service -Name TermService -Force
+
+  - name: Advanced System Optimization
+    run: |
+      Write-Host "Starting system optimization..."
+
+      $services = @(
+        "SysMain",
+        "DiagTrack",
+        "WSearch",
+        "Fax",
+        "MapsBroker",
+        "XblAuthManager",
+        "XblGameSave",
+        "XboxNetApiSvc",
+        "XboxGipSvc",
+        "Spooler",
+        "WbioSrvc",
+        "WerSvc",
+        "PcaSvc",
+        "WMPNetworkSvc",
+        "lfsvc",
+        "TrkWks"
+      )
+
+      foreach ($service in $services) {
+        Stop-Service -Name $service -Force -ErrorAction SilentlyContinue
+        Set-Service -Name $service -StartupType Disabled -ErrorAction SilentlyContinue
+      }
+
+      Get-ScheduledTask | Where-Object {$_.TaskName -like "*Telemetry*"} | Disable-ScheduledTask -ErrorAction SilentlyContinue
+
+      Set-MpPreference -DisableRealtimeMonitoring $true
+
+      powercfg -setactive SCHEME_MIN
+
+      reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" /v VisualFXSetting /t REG_DWORD /d 2 /f
+
+      Remove-Item "$env:TEMP\*" -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item "C:\Windows\Temp\*" -Recurse -Force -ErrorAction SilentlyContinue
+
+      Write-Host "Optimization finished."
+
+  - name: Cleanup GitHub Runner Tools
+    run: |
+      Write-Host "Cleaning GitHub runner tools..."
+
+      $paths = @(
+        "C:\hostedtoolcache",
+        "C:\Program Files\Android",
+        "C:\Program Files\dotnet",
+        "C:\Program Files\Microsoft SDKs",
+        "C:\Program Files (x86)\Microsoft SDKs",
+        "C:\Program Files (x86)\Android",
+        "C:\Users\runneradmin\AppData\Local\Android",
+        "C:\Users\runneradmin\AppData\Local\Temp",
+        "C:\Users\runneradmin\AppData\Local\Microsoft\VisualStudio",
+        "C:\Users\runneradmin\AppData\Local\GitHub"
+      )
+
+      foreach ($path in $paths) {
+        if (Test-Path $path) {
+          Write-Host "Removing $path"
+          Remove-Item $path -Recurse -Force -ErrorAction SilentlyContinue
+        }
+      }
+
+  - name: Ultra Performance Optimization
+    run: |
+      Write-Host "Starting ultra optimization..."
+
+      Disable-WindowsOptionalFeature -Online -FeatureName "WorkFolders-Client" -NoRestart -ErrorAction SilentlyContinue
+      Disable-WindowsOptionalFeature -Online -FeatureName "Printing-XPSServices-Features" -NoRestart -ErrorAction SilentlyContinue
+      Disable-WindowsOptionalFeature -Online -FeatureName "FaxServicesClientPackage" -NoRestart -ErrorAction SilentlyContinue
+
+      $processes = @(
+        "SearchIndexer",
+        "RuntimeBroker",
+        "YourPhone",
+        "MicrosoftEdgeUpdate",
+        "OneDrive"
+      )
+
+      foreach ($proc in $processes) {
+        Get-Process $proc -ErrorAction SilentlyContinue | Stop-Process -Force
+      }
+
+      taskkill /f /im OneDrive.exe
+      Remove-Item "C:\ProgramData\Microsoft OneDrive" -Recurse -Force -ErrorAction SilentlyContinue
+
+      Dism.exe /online /Cleanup-Image /StartComponentCleanup /ResetBase
+
+      Remove-Item "C:\Windows\Logs\*" -Recurse -Force -ErrorAction SilentlyContinue
+
+      net stop wuauserv
+      Remove-Item "C:\Windows\SoftwareDistribution\*" -Recurse -Force -ErrorAction SilentlyContinue
+      net start wuauserv
+
+      Clear-RecycleBin -Force -ErrorAction SilentlyContinue
+      [System.GC]::Collect()
+
+      Write-Host "Ultra optimization finished."
+
+  - name: Create RDP User with Static Password
+    run: |
+      $password = "admin@123"
+      $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+
+      if (-not (Get-LocalUser -Name "TOOLBOXLAP" -ErrorAction SilentlyContinue)) {
+          New-LocalUser -Name "TOOLBOXLAP" -Password $securePass -AccountNeverExpires
+      }
+
+      Add-LocalGroupMember -Group "Administrators" -Member "TOOLBOXLAP"
+      Add-LocalGroupMember -Group "Remote Desktop Users" -Member "TOOLBOXLAP"
+
+      echo "RDP_CREDS=User: TOOLBOXLAP | Password: $password" >> $env:GITHUB_ENV
+
+  - name: Set Password for runneradmin
+    run: |
+      $password = "Runner@123"
+      $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+      Set-LocalUser -Name "runneradmin" -Password $securePass
+      echo "RUNNERADMIN_CREDS=User: runneradmin | Password: $password" >> $env:GITHUB_ENV
+
+  - name: Install Tailscale
+    run: |
+      $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+      $installerPath = "$env:TEMP\tailscale.msi"
+
+      Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+      Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+      Remove-Item $installerPath -Force
+
+  - name: Establish Tailscale Connection
+    run: |
+      & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+
+      $tsIP = $null
+      $retries = 0
+      while (-not $tsIP -and $retries -lt 10) {
+          $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          Start-Sleep -Seconds 5
+          $retries++
+      }
+
+      echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
+  - name: Verify RDP Accessibility
+    run: |
+      Write-Host "Tailscale IP: $env:TAILSCALE_IP"
+      Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
+
+  - name: Download Files
+    run: |
+      New-Item -ItemType Directory -Force -Path "C:\Downloads" | Out-Null
+      Invoke-WebRequest -Uri "https://download-2.msi.com/uti_exe/nb/MSI-APP-Player.zip" -OutFile "C:\Downloads\MSI-APP-Player.zip"
+      Invoke-WebRequest -Uri "https://www.leppsoft.com/soundpad/en/download/64/20250905-W6RMBNCQ/" -OutFile "C:\Downloads\Soundpad.exe"
+
+  - name: Maintain Connection
+    run: |
+      Write-Host "`n=== RDP ACCESS ==="
+      Write-Host "Address: $env:TAILSCALE_IP"
+      Write-Host "Username: TOOLBOXLAP"
+      Write-Host "Password: admin@123"
+      Write-Host "==================`n"
+
+      while ($true) {
+        Start-Sleep -Seconds 300
+      }
